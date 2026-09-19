@@ -1,0 +1,19 @@
+name = "discord-meeting-bot"
+main = "src/worker.ts"
+compatibility_date = "2026-09-19"
+
+[vars]
+DISCORD_CLIENT_ID = "1550967758521638972"
+DEFAULT_TIMEZONE = "America/Los_Angeles"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "discord-meeting-bot"
+database_id = "032b514e-3af7-494e-8dd2-a72fa9f257f7"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["* * * * *"]
+
+[observability.logs]
+enabled = true

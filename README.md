@@ -13,7 +13,7 @@ The bot never joins the call, records audio, or reads ordinary messages.
 - Lets every server member add and edit agenda items
 - Rolls unfinished agenda items into the next occurrence
 - Automatically starts and ends meetings at their scheduled times
-- Posts the live agenda, RSVP list, and current voice-room attendance
+- Posts the live agenda and RSVP attendance list in the voice room's chat
 - Supports skipping, canceling, and rescheduling a single occurrence
 - Uses a fixed, low-noise reminder schedule with a selectable role or no ping
 - Keeps all announcements and reminders in the chosen channel—never in DMs
@@ -30,7 +30,7 @@ The notification system is deliberately small and predictable:
 | 10 minutes before | Second reminder with RSVP buttons; same audience choice |
 | Agenda or RSVP edit | Meeting card updates silently |
 | Cancellation or reschedule | The selected role is notified, or the update is posted without a ping |
-| Meeting time | Live agenda and attendance appear in the voice room's chat without a ping |
+| Meeting time | Live agenda and RSVP attendance appear in the voice room's chat without a ping |
 
 The bot never sends direct messages or pings individual RSVP respondents. RSVP buttons remain open before and during the meeting, and close when the occurrence is completed, canceled, or skipped.
 
@@ -82,7 +82,26 @@ npm run build
 npm start
 ```
 
-## Run with Docker
+## Deploy free on Cloudflare Workers
+
+The production deployment uses Cloudflare Workers and D1, so no laptop or always-on server is required.
+
+```sh
+npm install
+npx wrangler login
+npx wrangler d1 create discord-meeting-bot
+# Put the returned database_id in wrangler.toml.
+npm run d1:migrate
+npx wrangler secret put DISCORD_TOKEN
+npx wrangler secret put DISCORD_PUBLIC_KEY
+npm run deploy:worker
+```
+
+After deployment, set the Worker's URL as the application's **Interactions Endpoint URL** in Discord's Developer Portal. The scheduled Worker runs once per minute to deliver reminders and start/end meetings. D1 stores meeting series, occurrences, agendas, RSVPs, setup drafts, and sent-reminder history.
+
+Cloudflare receives slash commands and components over Discord's HTTP interactions API. Because this deployment does not keep a Gateway connection open, the meeting-start message lists people who RSVP'd Going rather than reading live voice-channel membership.
+
+## Run the Gateway version with Docker
 
 ```sh
 docker build -t discord-meeting-bot .
@@ -115,7 +134,7 @@ The test suite covers recurrence across daylight-saving changes, multi-weekday a
 
 ## Data and deployment
 
-The default database is `./data/meetings.sqlite`. Override it with `DATABASE_PATH`.
+The Gateway version's default database is `./data/meetings.sqlite`. Override it with `DATABASE_PATH`. The Cloudflare deployment uses the D1 database configured in `wrangler.toml`.
 
 SQLite keeps installation simple and is appropriate for a single bot process. For a large multi-instance deployment, the `MeetingDatabase` class is the seam to replace with PostgreSQL while leaving the Discord and scheduling behavior intact.
 
