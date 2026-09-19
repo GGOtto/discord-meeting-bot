@@ -12,5 +12,4 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
-VOLUME ["/app/data"]
 CMD ["npm", "start"]
