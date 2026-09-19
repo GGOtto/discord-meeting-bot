@@ -1,5 +1,4 @@
 import {
-  ChannelType,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -19,46 +18,7 @@ export const commands = [
     .setDMPermission(false)
     .addSubcommand((subcommand) => subcommand
       .setName("create")
-      .setDescription("Create a meeting or recurring series")
-      .addStringOption((option) => option.setName("title").setDescription("Meeting name").setRequired(true).setMaxLength(100))
-      .addStringOption((option) => option.setName("first-date").setDescription("First date as YYYY-MM-DD").setRequired(true))
-      .addStringOption((option) => option.setName("time").setDescription("Local time as 24-hour HH:mm").setRequired(true))
-      .addStringOption((option) => option.setName("timezone").setDescription("IANA timezone, such as America/Los_Angeles").setRequired(true))
-      .addChannelOption((option) => option
-        .setName("voice-channel")
-        .setDescription("Voice channel where the meeting happens")
-        .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
-        .setRequired(true))
-      .addChannelOption((option) => option
-        .setName("announcement-channel")
-        .setDescription("Channel for the meeting card and reminders")
-        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-        .setRequired(true))
-      .addStringOption((option) => option
-        .setName("frequency")
-        .setDescription("How often the meeting repeats")
-        .setRequired(true)
-        .addChoices(
-          { name: "One time", value: "once" },
-          { name: "Daily", value: "daily" },
-          { name: "Weekly", value: "weekly" },
-          { name: "Monthly", value: "monthly" },
-        ))
-      .addIntegerOption((option) => option.setName("every").setDescription("Repeat every N days/weeks/months (default 1)").setMinValue(1).setMaxValue(52))
-      .addStringOption((option) => option.setName("weekdays").setDescription("For weekly meetings: mon,wed,fri"))
-      .addIntegerOption((option) => option.setName("duration").setDescription("Duration in minutes (default 60)").setMinValue(5).setMaxValue(1440))
-      .addStringOption((option) => option
-        .setName("notifications")
-        .setDescription("Notification level (default Balanced)")
-        .addChoices(
-          { name: "Quiet", value: "quiet" },
-          { name: "Balanced", value: "balanced" },
-          { name: "High visibility", value: "high" },
-        ))
-      .addRoleOption((option) => option.setName("notify-role").setDescription("Role to invite (default @everyone)"))
-      .addStringOption((option) => option.setName("first-agenda-item").setDescription("Optional first agenda item").setMaxLength(500))
-      .addStringOption((option) => option.setName("ends-on").setDescription("Optional final local date as YYYY-MM-DD"))
-      .addIntegerOption((option) => option.setName("ends-after").setDescription("Optional maximum number of occurrences").setMinValue(1).setMaxValue(500)))
+      .setDescription("Open the private meeting setup wizard"))
     .addSubcommand((subcommand) => subcommand.setName("list").setDescription("List active meeting series"))
     .addSubcommand((subcommand) => subcommand.setName("pause").setDescription("Pause future occurrences").addStringOption(seriesIdOption))
     .addSubcommand((subcommand) => subcommand.setName("resume").setDescription("Resume a paused series").addStringOption(seriesIdOption))

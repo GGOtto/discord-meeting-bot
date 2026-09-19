@@ -15,29 +15,28 @@ The bot never joins the call, records audio, or reads ordinary messages.
 - Automatically starts and ends meetings at their scheduled times
 - Posts the live agenda, RSVP list, and current voice-room attendance
 - Supports skipping, canceling, and rescheduling a single occurrence
-- Provides quiet, balanced, and high-visibility notification presets
+- Uses a fixed, low-noise reminder schedule with a selectable role or no ping
 - Keeps all announcements and reminders in the chosen channel—never in DMs
 - Persists everything in a local SQLite database
 
 ## Notification philosophy
 
-The default **Balanced** preset is useful without being chatty:
+The notification system is deliberately small and predictable:
 
 | Event | Default behavior |
 | --- | --- |
-| New occurrence | Meeting card mentioning the invited role (`@everyone` by default) |
-| 24 hours before | Reminder and current agenda, without a ping |
-| 10 minutes before | Reminder mentioning Going and Maybe attendees |
-| Empty agenda at 24 hours | Announcement-channel warning mentioning the organizer |
+| New occurrence | Quiet meeting card with agenda and RSVP buttons |
+| 8 hours before | Reminder with RSVP buttons; pings the selected role (`@everyone` by default) or nobody |
+| 10 minutes before | Second reminder with RSVP buttons; same audience choice |
 | Agenda or RSVP edit | Meeting card updates silently |
-| Cancellation or reschedule | Going and Maybe attendees are notified |
-| Meeting time | Live agenda and attendance appear in the voice room's chat |
+| Cancellation or reschedule | The selected role is notified, or the update is posted without a ping |
+| Meeting time | Live agenda and attendance appear in the voice room's chat without a ping |
 
-The **Quiet** preset omits scheduled reminders. **High visibility** adds 24-hour, 1-hour, and 10-minute reminders and mentions the invited role at 24 hours. The bot never sends direct messages.
+The bot never sends direct messages or pings individual RSVP respondents. RSVP buttons remain open before and during the meeting, and close when the occurrence is completed, canceled, or skipped.
 
 ## Discord commands
 
-- `/series create` — create a one-time or recurring series
+- `/series create` — open a private setup wizard for a one-time or recurring series
 - `/series list|pause|resume|stop` — manage a series
 - `/meeting list|show|start|end|cancel|skip|reschedule` — manage one occurrence
 - `/agenda add|edit|remove|done|reopen|list` — collaborate on the agenda
@@ -98,7 +97,7 @@ Keep `/app/data` on a persistent volume. The bot uses one SQLite database and is
 - Times use 24-hour `HH:mm`.
 - Timezones use IANA names such as `America/Los_Angeles`, `America/New_York`, or `Europe/London`.
 - For selected weekdays, enter values such as `mon,wed,fri`.
-- `every: 2` with a weekly schedule creates a biweekly series.
+- Setting **Repeat every** to `2` with a weekly schedule creates a biweekly series.
 - Monthly meetings created on the 29th–31st use the final day in shorter months.
 - `ends-on` and `ends-after` are mutually exclusive.
 - Finishing, skipping, or canceling an occurrence publishes the next meeting card.

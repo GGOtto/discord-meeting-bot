@@ -7,6 +7,7 @@ export interface Config {
   databasePath: string;
   schedulerIntervalMs: number;
   logLevel: string;
+  defaultTimezone: string;
 }
 
 function required(name: string): string {
@@ -27,6 +28,7 @@ export function loadConfig(): Config {
     databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/meetings.sqlite"),
     schedulerIntervalMs,
     logLevel: process.env.LOG_LEVEL ?? "info",
+    defaultTimezone: process.env.DEFAULT_TIMEZONE?.trim() || "America/Los_Angeles",
   };
   const guildId = process.env.DISCORD_GUILD_ID?.trim();
   if (guildId) config.guildId = guildId;

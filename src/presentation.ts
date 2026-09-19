@@ -31,6 +31,15 @@ function rsvpList(details: MeetingDetails, response: RsvpResponse): string {
   return users.length ? users.join(", ").slice(0, 1024) : "—";
 }
 
+export function rsvpButtons(details: MeetingDetails): ActionRowBuilder<ButtonBuilder> {
+  const disabled = ["completed", "canceled", "skipped"].includes(details.meeting.status);
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`rsvp:going:${details.meeting.id}`).setLabel("Going").setEmoji("✅").setStyle(ButtonStyle.Success).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`rsvp:maybe:${details.meeting.id}`).setLabel("Maybe").setEmoji("🤔").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`rsvp:no:${details.meeting.id}`).setLabel("Can't").setEmoji("❌").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+  );
+}
+
 export function meetingMessage(details: MeetingDetails): {
   embeds: EmbedBuilder[];
   components: ActionRowBuilder<ButtonBuilder>[];
@@ -44,6 +53,7 @@ export function meetingMessage(details: MeetingDetails): {
       { name: "Voice room", value: `<#${meeting.voiceChannelId}>`, inline: true },
       { name: "Duration", value: `${meeting.durationMinutes} minutes`, inline: true },
       { name: "Repeats", value: describeRecurrence(series), inline: true },
+      { name: "Reminder audience", value: meeting.notifyRoleId === null ? "No ping" : meeting.notifyRoleId === meeting.guildId ? "@everyone" : `<@&${meeting.notifyRoleId}>`, inline: true },
       { name: "Agenda", value: agendaText(agenda), inline: false },
       { name: `✅ Going (${details.rsvps.filter((r) => r.response === "going").length})`, value: rsvpList(details, "going"), inline: true },
       { name: `🤔 Maybe (${details.rsvps.filter((r) => r.response === "maybe").length})`, value: rsvpList(details, "maybe"), inline: true },
@@ -52,10 +62,7 @@ export function meetingMessage(details: MeetingDetails): {
     .setFooter({ text: `Meeting ${meeting.id} · Series ${series.id} · Agenda edits are open to everyone` });
 
   const disabled = ["completed", "canceled", "skipped"].includes(meeting.status);
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`rsvp:going:${meeting.id}`).setLabel("Going").setEmoji("✅").setStyle(ButtonStyle.Success).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`rsvp:maybe:${meeting.id}`).setLabel("Maybe").setEmoji("🤔").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
-    new ButtonBuilder().setCustomId(`rsvp:no:${meeting.id}`).setLabel("Can't").setEmoji("❌").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+  const row = rsvpButtons(details).addComponents(
     new ButtonBuilder().setCustomId(`agenda-add:${meeting.id}`).setLabel("Add agenda").setEmoji("➕").setStyle(ButtonStyle.Primary).setDisabled(disabled),
     new ButtonBuilder().setCustomId(`agenda-edit:${meeting.id}`).setLabel("Edit agenda").setEmoji("✏️").setStyle(ButtonStyle.Primary).setDisabled(disabled),
   );

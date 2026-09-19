@@ -1,15 +1,19 @@
 import type { NotificationPreset, ReminderRule } from "./types.js";
 
 export const REMINDER_PRESETS: Record<NotificationPreset, ReminderRule[]> = {
-  quiet: [],
+  // Preset names remain in storage for compatibility with existing databases.
+  // The user-facing behavior is now one fixed, intentionally small schedule.
+  quiet: [
+    { key: "8h", minutesBefore: 8 * 60, mention: "role" },
+    { key: "10m", minutesBefore: 10, mention: "role" },
+  ],
   balanced: [
-    { key: "24h", minutesBefore: 24 * 60, mention: "none" },
-    { key: "10m", minutesBefore: 10, mention: "attendees" },
+    { key: "8h", minutesBefore: 8 * 60, mention: "role" },
+    { key: "10m", minutesBefore: 10, mention: "role" },
   ],
   high: [
-    { key: "24h", minutesBefore: 24 * 60, mention: "role-and-attendees" },
-    { key: "1h", minutesBefore: 60, mention: "attendees" },
-    { key: "10m", minutesBefore: 10, mention: "attendees" },
+    { key: "8h", minutesBefore: 8 * 60, mention: "role" },
+    { key: "10m", minutesBefore: 10, mention: "role" },
   ],
 };
 

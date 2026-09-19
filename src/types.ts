@@ -73,5 +73,5 @@ export interface MeetingDetails {
 export interface ReminderRule {
   key: string;
   minutesBefore: number;
-  mention: "none" | "attendees" | "role-and-attendees";
+  mention: "none" | "role";
 }

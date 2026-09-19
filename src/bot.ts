@@ -1,20 +1,27 @@
 import {
   Client,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelSelectMenuBuilder,
+  ChannelType,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
   ModalBuilder,
   PermissionFlagsBits,
+  RoleSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
   type AutocompleteInteraction,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type ChatInputCommandInteraction,
   type GuildMember,
   type Interaction,
   type ModalSubmitInteraction,
+  type RoleSelectMenuInteraction,
   type SendableChannels,
 } from "discord.js";
 import { DateTime } from "luxon";
@@ -24,12 +31,12 @@ import { MeetingDatabase } from "./database.js";
 import { createId } from "./ids.js";
 import { dueReminderRules, mostRelevantReminder } from "./notifications.js";
 import { firstOccurrenceIso, nextOccurrenceIso, parseWeekdays, validateSchedule } from "./recurrence.js";
-import { agendaText, liveMeetingEmbed, meetingMessage, reminderEmbed } from "./presentation.js";
+import { agendaText, liveMeetingEmbed, meetingMessage, reminderEmbed, rsvpButtons } from "./presentation.js";
 import type {
+  Frequency,
   MeetingDetails,
   MeetingOccurrence,
   MeetingSeries,
-  NotificationPreset,
   RsvpResponse,
 } from "./types.js";
 
@@ -46,18 +53,52 @@ function isOrganizer(interaction: ChatInputCommandInteraction, details: MeetingD
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageEvents));
 }
 
-function invitedRoleId(details: MeetingDetails): string {
-  return details.meeting.notifyRoleId ?? details.meeting.guildId;
+interface SeriesDraft {
+  id: string;
+  userId: string;
+  guildId: string;
+  title: string;
+  firstDate: string;
+  localTime: string;
+  timezone: string;
+  durationMinutes: number;
+  frequency: Frequency;
+  intervalCount: number;
+  weekdaysText: string;
+  endsOn: string;
+  occurrenceLimit: number | null;
+  voiceChannelId: string | null;
+  announcementChannelId: string | null;
+  notifyRoleId: string | null;
+  createdAt: number;
 }
 
 function roleMention(roleId: string, guildId: string): string {
   return roleId === guildId ? "@everyone" : `<@&${roleId}>`;
 }
 
+function audienceMentions(roleId: string | null, guildId: string) {
+  if (!roleId) return { parse: [] as "everyone"[], roles: [] as string[], users: [] as string[] };
+  if (roleId === guildId) return { parse: ["everyone"] as "everyone"[], roles: [] as string[], users: [] as string[] };
+  return { parse: [] as "everyone"[], roles: [roleId], users: [] as string[] };
+}
+
+function input(customId: string, label: string, value: string, required = true, maxLength = 100): TextInputBuilder {
+  const item = new TextInputBuilder()
+    .setCustomId(customId)
+    .setLabel(label)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(required)
+    .setMaxLength(maxLength);
+  if (value) item.setValue(value);
+  return item;
+}
+
 export class MeetingBot {
   readonly client: Client;
   private scheduler?: NodeJS.Timeout;
   private tickRunning = false;
+  private readonly drafts = new Map<string, SeriesDraft>();
 
   constructor(
     private readonly config: Config,
@@ -89,6 +130,8 @@ export class MeetingBot {
     try {
       if (interaction.isAutocomplete()) return await this.handleAutocomplete(interaction);
       if (interaction.isButton()) return await this.handleButton(interaction);
+      if (interaction.isChannelSelectMenu()) return await this.handleDraftChannelSelect(interaction);
+      if (interaction.isRoleSelectMenu()) return await this.handleDraftRoleSelect(interaction);
       if (interaction.isModalSubmit()) return await this.handleModal(interaction);
       if (interaction.isChatInputCommand()) return await this.handleCommand(interaction);
     } catch (error) {
@@ -166,55 +209,166 @@ export class MeetingBot {
   }
 
   private async createSeries(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply(ephemeral);
-    const title = interaction.options.getString("title", true).trim();
-    const firstDate = interaction.options.getString("first-date", true);
-    const localTime = interaction.options.getString("time", true);
-    const timezone = interaction.options.getString("timezone", true);
-    const frequency = interaction.options.getString("frequency", true) as MeetingSeries["frequency"];
-    const voiceChannel = interaction.options.getChannel("voice-channel", true);
-    const announcementChannel = interaction.options.getChannel("announcement-channel", true);
-    const role = interaction.options.getRole("notify-role");
-    const intervalCount = interaction.options.getInteger("every") ?? 1;
-    const durationMinutes = interaction.options.getInteger("duration") ?? 60;
-    const notificationPreset = (interaction.options.getString("notifications") ?? "balanced") as NotificationPreset;
-    const endsOn = interaction.options.getString("ends-on");
-    const occurrenceLimit = interaction.options.getInteger("ends-after");
-    if (endsOn && occurrenceLimit) throw new Error("Choose either ends-on or ends-after, not both");
-    const firstLocal = validateSchedule(firstDate, localTime, timezone);
+    const draft: SeriesDraft = {
+      id: createId("draft"),
+      userId: interaction.user.id,
+      guildId: interaction.guildId!,
+      title: "",
+      firstDate: "",
+      localTime: "10:00",
+      timezone: this.config.defaultTimezone,
+      durationMinutes: 60,
+      frequency: "weekly",
+      intervalCount: 1,
+      weekdaysText: "",
+      endsOn: "",
+      occurrenceLimit: null,
+      voiceChannelId: null,
+      announcementChannelId: interaction.channel?.isTextBased() ? interaction.channelId : null,
+      notifyRoleId: interaction.guildId!,
+      createdAt: Date.now(),
+    };
+    this.drafts.set(draft.id, draft);
+    await interaction.reply({ ...this.draftSummary(draft), ...ephemeral });
+  }
+
+  private requireDraft(id: string, userId: string, guildId: string | null): SeriesDraft {
+    const draft = this.drafts.get(id);
+    if (!draft || draft.userId !== userId || draft.guildId !== guildId || Date.now() - draft.createdAt > 60 * 60_000) {
+      if (draft) this.drafts.delete(id);
+      throw new Error("That setup draft expired. Run /series create to start again");
+    }
+    return draft;
+  }
+
+  private draftSummary(draft: SeriesDraft) {
+    const audience = draft.notifyRoleId === null
+      ? "No ping"
+      : draft.notifyRoleId === draft.guildId ? "@everyone" : `<@&${draft.notifyRoleId}>`;
+    const recurrence = draft.frequency === "once"
+      ? "One time"
+      : `${draft.frequency}, every ${draft.intervalCount}${draft.weekdaysText ? ` · ${draft.weekdaysText}` : ""}${draft.endsOn ? ` · through ${draft.endsOn}` : ""}${draft.occurrenceLimit ? ` · ${draft.occurrenceLimit} occurrences` : ""}`;
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("Create a meeting series")
+      .setDescription("This setup is private. Nothing is posted until you choose **Publish**.")
+      .addFields(
+        { name: "Meeting", value: draft.title ? `**${draft.title}**\n${draft.firstDate || "Date needed"} at ${draft.localTime} · ${draft.timezone}\n${draft.durationMinutes} minutes` : "Choose **Details**", inline: false },
+        { name: "Repeats", value: recurrence, inline: true },
+        { name: "Channels", value: `${draft.voiceChannelId ? `<#${draft.voiceChannelId}>` : "Voice channel needed"}\n${draft.announcementChannelId ? `<#${draft.announcementChannelId}>` : "Announcement channel needed"}`, inline: true },
+        { name: "Audience", value: audience, inline: true },
+        { name: "Notifications", value: "A quiet card when published, then reminders at **8 hours** and **10 minutes**. Reminders use the audience above and always include RSVP buttons.", inline: false },
+      )
+      .setFooter({ text: "RSVPs stay open through the meeting. Agenda edits update the card silently." });
+    const main = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`draft:details:${draft.id}`).setLabel("Details").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`draft:recurrence:${draft.id}`).setLabel("Recurrence").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`draft:channels:${draft.id}`).setLabel("Channels").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`draft:audience:${draft.id}`).setLabel("Audience").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`draft:publish:${draft.id}`).setLabel("Publish").setStyle(ButtonStyle.Success),
+    );
+    const cancel = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`draft:cancel:${draft.id}`).setLabel("Cancel setup").setStyle(ButtonStyle.Danger),
+    );
+    return { embeds: [embed], components: [main, cancel] };
+  }
+
+  private draftChannelView(draft: SeriesDraft) {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("Choose channels")
+      .setDescription("Choose where the meeting happens and where its card and reminders should appear.");
+    const voice = new ChannelSelectMenuBuilder()
+      .setCustomId(`draft-channel-voice:${draft.id}`)
+      .setPlaceholder(draft.voiceChannelId ? "Change voice channel" : "Choose voice channel")
+      .setChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice);
+    const announcements = new ChannelSelectMenuBuilder()
+      .setCustomId(`draft-channel-announcement:${draft.id}`)
+      .setPlaceholder(draft.announcementChannelId ? "Change announcement channel" : "Choose announcement channel")
+      .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
+    const back = new ButtonBuilder().setCustomId(`draft:back:${draft.id}`).setLabel("Back").setStyle(ButtonStyle.Secondary);
+    return {
+      embeds: [embed],
+      components: [
+        new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(voice),
+        new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(announcements),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(back),
+      ],
+    };
+  }
+
+  private draftAudienceView(draft: SeriesDraft) {
+    const current = draft.notifyRoleId === null ? "No ping" : draft.notifyRoleId === draft.guildId ? "@everyone" : `<@&${draft.notifyRoleId}>`;
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle("Choose the reminder audience")
+      .setDescription(`Current choice: **${current}**\n\nOnly this audience can be pinged. The bot never pings individual RSVPs.`);
+    return {
+      embeds: [embed],
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`draft:everyone:${draft.id}`).setLabel("@everyone").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`draft:choose-role:${draft.id}`).setLabel("Choose a role").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`draft:no-ping:${draft.id}`).setLabel("No ping").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`draft:back:${draft.id}`).setLabel("Back").setStyle(ButtonStyle.Secondary),
+      )],
+    };
+  }
+
+  private draftRoleView(draft: SeriesDraft) {
+    return {
+      embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle("Choose one role").setDescription("That role will be pinged at 8 hours and 10 minutes, and for cancellations or reschedules.")],
+      components: [
+        new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(
+          new RoleSelectMenuBuilder().setCustomId(`draft-role:${draft.id}`).setPlaceholder("Choose a role"),
+        ),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId(`draft:audience:${draft.id}`).setLabel("Back").setStyle(ButtonStyle.Secondary),
+        ),
+      ],
+    };
+  }
+
+  private async publishDraft(interaction: ButtonInteraction, draft: SeriesDraft): Promise<void> {
+    if (!draft.title || !draft.firstDate) throw new Error("Open Details and enter a meeting name and first date");
+    if (!draft.voiceChannelId || !draft.announcementChannelId) throw new Error("Open Channels and choose both channels");
+    if (draft.endsOn && draft.occurrenceLimit) throw new Error("Choose either an ending date or a number of occurrences, not both");
+    const firstLocal = validateSchedule(draft.firstDate, draft.localTime, draft.timezone);
     if (firstLocal.toMillis() <= Date.now()) throw new Error("The first meeting must be in the future");
-    if (endsOn) {
-      validateSchedule(endsOn, localTime, timezone);
-      if (endsOn < firstDate) throw new Error("The ending date cannot be before the first meeting");
+    if (draft.endsOn) {
+      validateSchedule(draft.endsOn, draft.localTime, draft.timezone);
+      if (draft.endsOn < draft.firstDate) throw new Error("The ending date cannot be before the first meeting");
     }
-    const weekdays = frequency === "weekly"
-      ? (parseWeekdays(interaction.options.getString("weekdays")) || [])
-      : [];
-    if (frequency === "weekly" && !weekdays.length) weekdays.push(firstLocal.weekday);
-    if (frequency === "weekly" && !weekdays.includes(firstLocal.weekday)) {
+    const weekdays = draft.frequency === "weekly" ? parseWeekdays(draft.weekdaysText) : [];
+    if (draft.frequency === "weekly" && !weekdays.length) weekdays.push(firstLocal.weekday);
+    if (draft.frequency === "weekly" && !weekdays.includes(firstLocal.weekday)) {
       throw new Error("The first date must fall on one of the selected weekdays");
-    }
-    if (frequency !== "weekly" && interaction.options.getString("weekdays")) {
-      throw new Error("The weekdays option is only used with weekly meetings");
     }
     const now = new Date().toISOString();
     const series: MeetingSeries = {
-      id: createId("ser"), guildId: interaction.guildId!, title, creatorId: interaction.user.id,
-      voiceChannelId: voiceChannel.id, announcementChannelId: announcementChannel.id,
-      notifyRoleId: role?.id ?? interaction.guildId!, timezone, localTime, firstDate, frequency, intervalCount,
-      weekdays, monthDay: frequency === "monthly" ? firstLocal.day : null, durationMinutes,
-      notificationPreset, endsOn, occurrenceLimit, status: "active", createdAt: now, updatedAt: now,
+      id: createId("ser"), guildId: draft.guildId, title: draft.title, creatorId: draft.userId,
+      voiceChannelId: draft.voiceChannelId, announcementChannelId: draft.announcementChannelId,
+      notifyRoleId: draft.notifyRoleId, timezone: draft.timezone, localTime: draft.localTime,
+      firstDate: draft.firstDate, frequency: draft.frequency, intervalCount: draft.intervalCount,
+      weekdays, monthDay: draft.frequency === "monthly" ? firstLocal.day : null,
+      durationMinutes: draft.durationMinutes, notificationPreset: "balanced",
+      endsOn: draft.endsOn || null, occurrenceLimit: draft.occurrenceLimit,
+      status: "active", createdAt: now, updatedAt: now,
     };
     const meeting: MeetingOccurrence = {
       id: createId("mtg"), seriesId: series.id, guildId: series.guildId,
-      startsAt: firstOccurrenceIso(firstDate, localTime, timezone), durationMinutes,
-      status: "scheduled", announcementChannelId: series.announcementChannelId,
-      announcementMessageId: null, voiceChannelId: series.voiceChannelId,
-      notifyRoleId: series.notifyRoleId, notificationPreset, createdAt: now, updatedAt: now,
+      startsAt: firstOccurrenceIso(series.firstDate, series.localTime, series.timezone),
+      durationMinutes: series.durationMinutes, status: "scheduled",
+      announcementChannelId: series.announcementChannelId, announcementMessageId: null,
+      voiceChannelId: series.voiceChannelId, notifyRoleId: series.notifyRoleId,
+      notificationPreset: "balanced", createdAt: now, updatedAt: now,
     };
-    this.database.createSeries(series, meeting, interaction.options.getString("first-agenda-item") ?? undefined);
+    this.database.createSeries(series, meeting);
     await this.publishMeeting(meeting.id);
-    await interaction.editReply(`Created **${title}**. Meeting ID: \`${meeting.id}\` · Series ID: \`${series.id}\``);
+    this.drafts.delete(draft.id);
+    await interaction.update({
+      content: `Created **${series.title}**. Its quiet meeting card is now in <#${series.announcementChannelId}>.`,
+      embeds: [], components: [],
+    });
   }
 
   private async handleMeetingCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -308,12 +462,13 @@ export class MeetingBot {
         { name: "RSVP", value: "Use the buttons on a meeting card." },
         { name: "Agenda", value: "Anyone can use the agenda buttons or `/agenda add`, `/agenda edit`, and `/agenda done`. Unfinished items roll forward." },
         { name: "During the meeting", value: "The bot posts the agenda and attendance in the voice room's text chat. It never records or listens." },
-        { name: "Notifications", value: "All notices stay in the announcement channel. Balanced sends a quiet 24-hour reminder and pings attendees at 10 minutes." },
+        { name: "Notifications", value: "The meeting card is quiet. Reminders at 8 hours and 10 minutes ping the chosen role (default @everyone), or nobody when No ping is selected. Individual people are never pinged." },
       );
     await interaction.reply({ embeds: [embed], ...ephemeral });
   }
 
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
+    if (interaction.customId.startsWith("draft:")) return this.handleDraftButton(interaction);
     const [action, value, idFromThird] = interaction.customId.split(":");
     if (action === "rsvp") {
       const id = idFromThird;
@@ -343,9 +498,124 @@ export class MeetingBot {
     }
   }
 
+  private async handleDraftButton(interaction: ButtonInteraction): Promise<void> {
+    const [, action, draftId] = interaction.customId.split(":");
+    if (!action || !draftId) throw new Error("Invalid setup button");
+    const draft = this.requireDraft(draftId, interaction.user.id, interaction.guildId);
+    if (action === "cancel") {
+      this.drafts.delete(draft.id);
+      await interaction.update({ content: "Meeting setup canceled. Nothing was posted.", embeds: [], components: [] });
+      return;
+    }
+    if (action === "back") return void await interaction.update(this.draftSummary(draft));
+    if (action === "channels") return void await interaction.update(this.draftChannelView(draft));
+    if (action === "audience") return void await interaction.update(this.draftAudienceView(draft));
+    if (action === "choose-role") return void await interaction.update(this.draftRoleView(draft));
+    if (action === "everyone") {
+      draft.notifyRoleId = draft.guildId;
+      return void await interaction.update(this.draftSummary(draft));
+    }
+    if (action === "no-ping") {
+      draft.notifyRoleId = null;
+      return void await interaction.update(this.draftSummary(draft));
+    }
+    if (action === "publish") return this.publishDraft(interaction, draft);
+    if (action === "details") {
+      const modal = new ModalBuilder().setCustomId(`draft-details-modal:${draft.id}`).setTitle("Meeting details").addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("title", "Meeting name", draft.title, true, 100)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("date", "First date (YYYY-MM-DD)", draft.firstDate, true, 10)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("time", "Time (24-hour HH:mm)", draft.localTime, true, 5)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("timezone", "Timezone", draft.timezone, true, 100)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("duration", "Duration in minutes", String(draft.durationMinutes), true, 4)),
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+    if (action === "recurrence") {
+      const modal = new ModalBuilder().setCustomId(`draft-recurrence-modal:${draft.id}`).setTitle("Recurrence").addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("frequency", "once, daily, weekly, or monthly", draft.frequency, true, 7)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("every", "Repeat every…", String(draft.intervalCount), true, 2)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("weekdays", "Weekdays (example: mon,wed,fri)", draft.weekdaysText, false, 40)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("ends-on", "Optional ending date (YYYY-MM-DD)", draft.endsOn, false, 10)),
+        new ActionRowBuilder<TextInputBuilder>().addComponents(input("ends-after", "Optional number of occurrences", draft.occurrenceLimit ? String(draft.occurrenceLimit) : "", false, 3)),
+      );
+      await interaction.showModal(modal);
+      return;
+    }
+    throw new Error("Unknown setup action");
+  }
+
+  private async handleDraftChannelSelect(interaction: ChannelSelectMenuInteraction): Promise<void> {
+    const [action, draftId] = interaction.customId.split(":");
+    if (!draftId) throw new Error("Invalid channel choice");
+    const draft = this.requireDraft(draftId, interaction.user.id, interaction.guildId);
+    const channelId = interaction.values[0];
+    if (!channelId) throw new Error("Choose a channel");
+    if (action === "draft-channel-voice") draft.voiceChannelId = channelId;
+    else if (action === "draft-channel-announcement") draft.announcementChannelId = channelId;
+    else throw new Error("Unknown channel choice");
+    await interaction.update(this.draftChannelView(draft));
+  }
+
+  private async handleDraftRoleSelect(interaction: RoleSelectMenuInteraction): Promise<void> {
+    const [action, draftId] = interaction.customId.split(":");
+    if (action !== "draft-role" || !draftId) throw new Error("Invalid role choice");
+    const draft = this.requireDraft(draftId, interaction.user.id, interaction.guildId);
+    const roleId = interaction.values[0];
+    if (!roleId) throw new Error("Choose a role");
+    draft.notifyRoleId = roleId;
+    await interaction.update(this.draftSummary(draft));
+  }
+
   private async handleModal(interaction: ModalSubmitInteraction): Promise<void> {
     const [action, meetingId] = interaction.customId.split(":");
-    if (!meetingId || !interaction.guildId) throw new Error("Invalid agenda form");
+    if (!meetingId || !interaction.guildId) throw new Error("Invalid form");
+    if (action === "draft-details-modal" || action === "draft-recurrence-modal") {
+      const draft = this.requireDraft(meetingId, interaction.user.id, interaction.guildId);
+      if (action === "draft-details-modal") {
+        const durationMinutes = Number(interaction.fields.getTextInputValue("duration"));
+        if (!Number.isInteger(durationMinutes) || durationMinutes < 5 || durationMinutes > 1440) {
+          throw new Error("Duration must be a whole number from 5 to 1440 minutes");
+        }
+        const title = interaction.fields.getTextInputValue("title").trim();
+        const firstDate = interaction.fields.getTextInputValue("date").trim();
+        const localTime = interaction.fields.getTextInputValue("time").trim();
+        const timezone = interaction.fields.getTextInputValue("timezone").trim();
+        validateSchedule(firstDate, localTime, timezone);
+        draft.title = title;
+        draft.firstDate = firstDate;
+        draft.localTime = localTime;
+        draft.timezone = timezone;
+        draft.durationMinutes = durationMinutes;
+      } else {
+        const frequency = interaction.fields.getTextInputValue("frequency").trim().toLowerCase();
+        if (!["once", "daily", "weekly", "monthly"].includes(frequency)) {
+          throw new Error("Frequency must be once, daily, weekly, or monthly");
+        }
+        const intervalCount = Number(interaction.fields.getTextInputValue("every"));
+        if (!Number.isInteger(intervalCount) || intervalCount < 1 || intervalCount > 52) {
+          throw new Error("Repeat every must be a whole number from 1 to 52");
+        }
+        const weekdaysText = interaction.fields.getTextInputValue("weekdays").trim();
+        if (frequency === "weekly") parseWeekdays(weekdaysText);
+        else if (weekdaysText) throw new Error("Weekdays are only used for weekly meetings");
+        const endsOn = interaction.fields.getTextInputValue("ends-on").trim();
+        const endsAfterText = interaction.fields.getTextInputValue("ends-after").trim();
+        if (endsOn && endsAfterText) throw new Error("Choose either an ending date or a number of occurrences, not both");
+        const occurrenceLimit = endsAfterText ? Number(endsAfterText) : null;
+        if (occurrenceLimit !== null && (!Number.isInteger(occurrenceLimit) || occurrenceLimit < 1 || occurrenceLimit > 500)) {
+          throw new Error("Occurrences must be a whole number from 1 to 500");
+        }
+        draft.frequency = frequency as Frequency;
+        draft.intervalCount = intervalCount;
+        draft.weekdaysText = weekdaysText;
+        draft.endsOn = endsOn;
+        draft.occurrenceLimit = occurrenceLimit;
+      }
+      await interaction.deferUpdate();
+      await interaction.editReply(this.draftSummary(draft));
+      return;
+    }
     const details = this.requireMeeting(meetingId, interaction.guildId);
     if (["completed", "canceled", "skipped"].includes(details.meeting.status)) throw new Error("That agenda is closed");
     const text = interaction.fields.getTextInputValue("text").trim();
@@ -375,16 +645,9 @@ export class MeetingBot {
     const details = this.database.getMeetingDetails(id);
     if (!details) throw new Error("Meeting not found");
     const channel = await this.getTextChannel(details.meeting.announcementChannelId);
-    const roleId = invitedRoleId(details);
-    const mentionEveryone = roleId === details.meeting.guildId;
     const message = await channel.send({
-      content: `${roleMention(roleId, details.meeting.guildId)} New meeting scheduled`,
       ...meetingMessage(details),
-      allowedMentions: {
-        parse: mentionEveryone ? ["everyone"] : [],
-        roles: mentionEveryone ? [] : [roleId],
-        users: [],
-      },
+      allowedMentions: { parse: [], roles: [], users: [] },
     });
     this.database.setAnnouncementMessage(id, message.id);
   }
@@ -395,7 +658,7 @@ export class MeetingBot {
     try {
       const channel = await this.getTextChannel(details.meeting.announcementChannelId);
       const message = await channel.messages.fetch(details.meeting.announcementMessageId);
-      await message.edit(meetingMessage(details));
+      await message.edit({ content: null, ...meetingMessage(details), allowedMentions: { parse: [], roles: [], users: [] } });
     } catch (error) {
       console.warn(`Could not refresh meeting post ${id}`, error);
     }
@@ -413,7 +676,7 @@ export class MeetingBot {
     const destination = voiceChannel?.isTextBased() && voiceChannel.isSendable()
       ? voiceChannel
       : await this.getTextChannel(details.meeting.announcementChannelId);
-    await destination.send({ embeds: [liveMeetingEmbed(details, voiceUserIds)] });
+    await destination.send({ embeds: [liveMeetingEmbed(details, voiceUserIds)], allowedMentions: { parse: [], roles: [], users: [] } });
     await this.refreshMeetingPost(id);
   }
 
@@ -454,30 +717,24 @@ export class MeetingBot {
   }
 
   private async sendImportantChange(details: MeetingDetails, text: string): Promise<void> {
-    const attendeeIds = details.rsvps.filter((rsvp) => rsvp.response !== "no").map((rsvp) => rsvp.userId);
     const channel = await this.getTextChannel(details.meeting.announcementChannelId);
-    const mentions = attendeeIds.map((id) => `<@${id}>`).join(" ");
+    const roleId = details.meeting.notifyRoleId;
+    const mention = roleId ? `${roleMention(roleId, details.meeting.guildId)} ` : "";
     await channel.send({
-      content: `${mentions ? `${mentions} ` : ""}⚠️ **${details.series.title}:** ${text}`,
-      allowedMentions: { users: attendeeIds, roles: [] },
+      content: `${mention}⚠️ **${details.series.title}:** ${text}`,
+      allowedMentions: audienceMentions(roleId, details.meeting.guildId),
     });
   }
 
-  private async sendReminder(details: MeetingDetails, minutes: number, mention: "none" | "attendees" | "role-and-attendees"): Promise<void> {
-    const attendeeIds = details.rsvps.filter((rsvp) => rsvp.response !== "no").map((rsvp) => rsvp.userId);
-    const inviteRoleId = invitedRoleId(details);
-    const roleIds = mention === "role-and-attendees" && inviteRoleId !== details.meeting.guildId ? [inviteRoleId] : [];
-    const mentionEveryone = mention === "role-and-attendees" && inviteRoleId === details.meeting.guildId;
-    const userMentions = mention === "none" ? [] : attendeeIds;
-    const content = [
-      ...(mentionEveryone ? ["@everyone"] : roleIds.map((id) => `<@&${id}>`)),
-      ...userMentions.map((id) => `<@${id}>`),
-    ].join(" ") || undefined;
+  private async sendReminder(details: MeetingDetails, minutes: number, mention: "none" | "role"): Promise<void> {
+    const roleId = mention === "role" ? details.meeting.notifyRoleId : null;
+    const content = roleId ? roleMention(roleId, details.meeting.guildId) : undefined;
     const channel = await this.getTextChannel(details.meeting.announcementChannelId);
     await channel.send({
       ...(content ? { content } : {}),
       embeds: [reminderEmbed(details, reminderLabel(minutes))],
-      allowedMentions: { parse: mentionEveryone ? ["everyone"] : [], roles: roleIds, users: userMentions },
+      components: [rsvpButtons(details)],
+      allowedMentions: audienceMentions(roleId, details.meeting.guildId),
     });
   }
 
@@ -511,18 +768,6 @@ export class MeetingBot {
           if (reminder) {
             await this.sendReminder(details, reminder.minutesBefore, reminder.mention);
             this.database.markNotificationsSent(meeting.id, due.map((rule) => rule.key));
-          }
-          const emptyAgendaDue = meeting.notificationPreset !== "quiet"
-            && !details.agenda.length
-            && now.getTime() >= startsAt - 24 * 60 * 60_000
-            && !sent.has("empty-agenda-24h");
-          if (emptyAgendaDue) {
-            const channel = await this.getTextChannel(details.meeting.announcementChannelId);
-            await channel.send({
-              content: `<@${details.series.creatorId}> 📝 **${details.series.title}** starts within 24 hours and has no agenda items yet.`,
-              allowedMentions: { users: [details.series.creatorId], roles: [] },
-            });
-            this.database.markNotificationsSent(meeting.id, ["empty-agenda-24h"]);
           }
         } catch (error) {
           console.error(`Scheduler failed for meeting ${meeting.id}`, error);
