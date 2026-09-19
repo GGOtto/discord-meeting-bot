@@ -81,9 +81,11 @@ export const commands = [
 
 export async function registerCommands(config: Config): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(config.token);
-  if (config.guildId) {
-    await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commands });
-    console.log(`Registered ${commands.length} commands in development guild ${config.guildId}`);
+  if (config.guildIds.length) {
+    await Promise.all(config.guildIds.map((guildId) =>
+      rest.put(Routes.applicationGuildCommands(config.clientId, guildId), { body: commands }),
+    ));
+    console.log(`Registered ${commands.length} commands in ${config.guildIds.length} configured guilds`);
   } else {
     await rest.put(Routes.applicationCommands(config.clientId), { body: commands });
     console.log(`Registered ${commands.length} global commands`);

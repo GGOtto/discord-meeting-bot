@@ -73,7 +73,7 @@ set -a; source .env; set +a
 npm run dev
 ```
 
-Set `DISCORD_GUILD_ID` while developing. Guild-scoped commands update immediately. If it is omitted, the bot registers global commands, which Discord can take longer to distribute.
+Set `DISCORD_GUILD_IDS` to a comma-separated list of servers where commands should update immediately. If it is omitted, the bot registers global commands, which Discord can take longer to distribute. The older singular `DISCORD_GUILD_ID` setting is still accepted.
 
 For a production-style local run:
 

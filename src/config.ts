@@ -3,7 +3,7 @@ import path from "node:path";
 export interface Config {
   token: string;
   clientId: string;
-  guildId?: string;
+  guildIds: string[];
   databasePath: string;
   schedulerIntervalMs: number;
   logLevel: string;
@@ -25,12 +25,14 @@ export function loadConfig(): Config {
   const config: Config = {
     token: required("DISCORD_TOKEN"),
     clientId: required("DISCORD_CLIENT_ID"),
+    guildIds: (process.env.DISCORD_GUILD_IDS ?? process.env.DISCORD_GUILD_ID ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
     databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/meetings.sqlite"),
     schedulerIntervalMs,
     logLevel: process.env.LOG_LEVEL ?? "info",
     defaultTimezone: process.env.DEFAULT_TIMEZONE?.trim() || "America/Los_Angeles",
   };
-  const guildId = process.env.DISCORD_GUILD_ID?.trim();
-  if (guildId) config.guildId = guildId;
   return config;
 }
