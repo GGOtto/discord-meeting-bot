@@ -4,7 +4,6 @@ export type SeriesStatus = "active" | "paused" | "stopped";
 export type MeetingStatus = "scheduled" | "live" | "completed" | "canceled" | "skipped";
 export type RsvpResponse = "going" | "maybe" | "no";
 export type AgendaStatus = "open" | "done";
-export type UserNotificationMode = "channel" | "dm" | "important" | "off";
 
 export interface MeetingSeries {
   id: string;

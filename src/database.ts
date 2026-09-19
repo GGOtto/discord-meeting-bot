@@ -10,7 +10,6 @@ import type {
   Rsvp,
   RsvpResponse,
   SeriesStatus,
-  UserNotificationMode,
 } from "./types.js";
 
 type SqlValue = string | number | bigint | null;
@@ -172,13 +171,6 @@ export class MeetingDatabase {
         PRIMARY KEY (meeting_id, notification_key)
       );
 
-      CREATE TABLE IF NOT EXISTS notification_preferences (
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        mode TEXT NOT NULL CHECK(mode IN ('channel','dm','important','off')),
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (guild_id, user_id)
-      );
     `);
   }
 
@@ -402,30 +394,6 @@ export class MeetingDatabase {
     `);
     const now = new Date().toISOString();
     for (const key of keys) statement.run(meetingId, key, now);
-  }
-
-  setNotificationPreference(guildId: string, userId: string, mode: UserNotificationMode): void {
-    this.db.prepare(`
-      INSERT INTO notification_preferences (guild_id, user_id, mode, updated_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(guild_id, user_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at
-    `).run(guildId, userId, mode, new Date().toISOString());
-  }
-
-  getDmRecipients(guildId: string, userIds: string[], importantOnly = false): string[] {
-    if (!userIds.length) return [];
-    const placeholders = userIds.map(() => "?").join(",");
-    const acceptedModes = importantOnly ? ["dm", "important"] : ["dm"];
-    const modePlaceholders = acceptedModes.map(() => "?").join(",");
-    const rows = this.all(
-      this.db.prepare(`
-        SELECT user_id FROM notification_preferences
-        WHERE guild_id = ? AND user_id IN (${placeholders}) AND mode IN (${modePlaceholders})
-      `),
-      guildId,
-      ...userIds,
-      ...acceptedModes,
-    );
-    return rows.map((row) => String(row.user_id));
   }
 
   occurrenceCount(seriesId: string): number {

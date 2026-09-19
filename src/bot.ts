@@ -1,5 +1,4 @@
 import {
-  ChannelType,
   Client,
   EmbedBuilder,
   Events,
@@ -32,7 +31,6 @@ import type {
   MeetingSeries,
   NotificationPreset,
   RsvpResponse,
-  UserNotificationMode,
 } from "./types.js";
 
 const ephemeral = { flags: MessageFlags.Ephemeral } as const;
@@ -46,6 +44,14 @@ function reminderLabel(minutes: number): string {
 function isOrganizer(interaction: ChatInputCommandInteraction, details: MeetingDetails): boolean {
   if (interaction.user.id === details.series.creatorId) return true;
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageEvents));
+}
+
+function invitedRoleId(details: MeetingDetails): string {
+  return details.meeting.notifyRoleId ?? details.meeting.guildId;
+}
+
+function roleMention(roleId: string, guildId: string): string {
+  return roleId === guildId ? "@everyone" : `<@&${roleId}>`;
 }
 
 export class MeetingBot {
@@ -121,7 +127,6 @@ export class MeetingBot {
       case "series": return this.handleSeriesCommand(interaction);
       case "meeting": return this.handleMeetingCommand(interaction);
       case "agenda": return this.handleAgendaCommand(interaction);
-      case "notifications": return this.handleNotificationCommand(interaction);
       case "meeting-help": return this.handleHelp(interaction);
       default: throw new Error("Unknown command");
     }
@@ -196,7 +201,7 @@ export class MeetingBot {
     const series: MeetingSeries = {
       id: createId("ser"), guildId: interaction.guildId!, title, creatorId: interaction.user.id,
       voiceChannelId: voiceChannel.id, announcementChannelId: announcementChannel.id,
-      notifyRoleId: role?.id ?? null, timezone, localTime, firstDate, frequency, intervalCount,
+      notifyRoleId: role?.id ?? interaction.guildId!, timezone, localTime, firstDate, frequency, intervalCount,
       weekdays, monthDay: frequency === "monthly" ? firstLocal.day : null, durationMinutes,
       notificationPreset, endsOn, occurrenceLimit, status: "active", createdAt: now, updatedAt: now,
     };
@@ -208,7 +213,7 @@ export class MeetingBot {
       notifyRoleId: series.notifyRoleId, notificationPreset, createdAt: now, updatedAt: now,
     };
     this.database.createSeries(series, meeting, interaction.options.getString("first-agenda-item") ?? undefined);
-    await this.publishMeeting(meeting.id, true);
+    await this.publishMeeting(meeting.id);
     await interaction.editReply(`Created **${title}**. Meeting ID: \`${meeting.id}\` · Series ID: \`${series.id}\``);
   }
 
@@ -293,18 +298,6 @@ export class MeetingBot {
     await interaction.reply({ content: "Agenda updated.", ...ephemeral });
   }
 
-  private async handleNotificationCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-    const mode = interaction.options.getString("mode", true) as UserNotificationMode;
-    this.database.setNotificationPreference(interaction.guildId!, interaction.user.id, mode);
-    const labels: Record<UserNotificationMode, string> = {
-      channel: "channel notifications only",
-      dm: "channel notifications plus direct-message reminders",
-      important: "direct messages for cancellations and major changes only",
-      off: "no personal direct messages",
-    };
-    await interaction.reply({ content: `Your preference is now **${labels[mode]}**.`, ...ephemeral });
-  }
-
   private async handleHelp(interaction: ChatInputCommandInteraction): Promise<void> {
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
@@ -315,7 +308,7 @@ export class MeetingBot {
         { name: "RSVP", value: "Use the buttons on a meeting card." },
         { name: "Agenda", value: "Anyone can use the agenda buttons or `/agenda add`, `/agenda edit`, and `/agenda done`. Unfinished items roll forward." },
         { name: "During the meeting", value: "The bot posts the agenda and attendance in the voice room's text chat. It never records or listens." },
-        { name: "Notifications", value: "Balanced sends a quiet 24-hour reminder and pings attendees at 10 minutes. Use `/notifications set` for personal DMs." },
+        { name: "Notifications", value: "All notices stay in the announcement channel. Balanced sends a quiet 24-hour reminder and pings attendees at 10 minutes." },
       );
     await interaction.reply({ embeds: [embed], ...ephemeral });
   }
@@ -378,15 +371,20 @@ export class MeetingBot {
     return channel;
   }
 
-  private async publishMeeting(id: string, mentionRole = false): Promise<void> {
+  private async publishMeeting(id: string): Promise<void> {
     const details = this.database.getMeetingDetails(id);
     if (!details) throw new Error("Meeting not found");
     const channel = await this.getTextChannel(details.meeting.announcementChannelId);
-    const roleId = mentionRole ? details.meeting.notifyRoleId : null;
+    const roleId = invitedRoleId(details);
+    const mentionEveryone = roleId === details.meeting.guildId;
     const message = await channel.send({
-      ...(roleId ? { content: `<@&${roleId}> New meeting scheduled` } : {}),
+      content: `${roleMention(roleId, details.meeting.guildId)} New meeting scheduled`,
       ...meetingMessage(details),
-      allowedMentions: { roles: roleId ? [roleId] : [], users: [] },
+      allowedMentions: {
+        parse: mentionEveryone ? ["everyone"] : [],
+        roles: mentionEveryone ? [] : [roleId],
+        users: [],
+      },
     });
     this.database.setAnnouncementMessage(id, message.id);
   }
@@ -451,7 +449,7 @@ export class MeetingBot {
       notificationPreset: series.notificationPreset, createdAt: now, updatedAt: now,
     };
     this.database.createNextMeeting(meeting, previous.id);
-    await this.publishMeeting(meeting.id, false);
+    await this.publishMeeting(meeting.id);
     return meeting;
   }
 
@@ -463,29 +461,24 @@ export class MeetingBot {
       content: `${mentions ? `${mentions} ` : ""}⚠️ **${details.series.title}:** ${text}`,
       allowedMentions: { users: attendeeIds, roles: [] },
     });
-    const recipients = this.database.getDmRecipients(details.meeting.guildId, attendeeIds, true);
-    await Promise.allSettled(recipients.map(async (id) => {
-      const user = await this.client.users.fetch(id);
-      await user.send(`⚠️ **${details.series.title}:** ${text}`);
-    }));
   }
 
   private async sendReminder(details: MeetingDetails, minutes: number, mention: "none" | "attendees" | "role-and-attendees"): Promise<void> {
     const attendeeIds = details.rsvps.filter((rsvp) => rsvp.response !== "no").map((rsvp) => rsvp.userId);
-    const roleIds = mention === "role-and-attendees" && details.meeting.notifyRoleId ? [details.meeting.notifyRoleId] : [];
+    const inviteRoleId = invitedRoleId(details);
+    const roleIds = mention === "role-and-attendees" && inviteRoleId !== details.meeting.guildId ? [inviteRoleId] : [];
+    const mentionEveryone = mention === "role-and-attendees" && inviteRoleId === details.meeting.guildId;
     const userMentions = mention === "none" ? [] : attendeeIds;
-    const content = [...roleIds.map((id) => `<@&${id}>`), ...userMentions.map((id) => `<@${id}>`)].join(" ") || undefined;
+    const content = [
+      ...(mentionEveryone ? ["@everyone"] : roleIds.map((id) => `<@&${id}>`)),
+      ...userMentions.map((id) => `<@${id}>`),
+    ].join(" ") || undefined;
     const channel = await this.getTextChannel(details.meeting.announcementChannelId);
     await channel.send({
       ...(content ? { content } : {}),
       embeds: [reminderEmbed(details, reminderLabel(minutes))],
-      allowedMentions: { roles: roleIds, users: userMentions },
+      allowedMentions: { parse: mentionEveryone ? ["everyone"] : [], roles: roleIds, users: userMentions },
     });
-    const recipients = this.database.getDmRecipients(details.meeting.guildId, attendeeIds);
-    await Promise.allSettled(recipients.map(async (id) => {
-      const user = await this.client.users.fetch(id);
-      await user.send({ embeds: [reminderEmbed(details, reminderLabel(minutes))] });
-    }));
   }
 
   private async tick(): Promise<void> {
@@ -524,12 +517,11 @@ export class MeetingBot {
             && now.getTime() >= startsAt - 24 * 60 * 60_000
             && !sent.has("empty-agenda-24h");
           if (emptyAgendaDue) {
-            try {
-              const organizer = await this.client.users.fetch(details.series.creatorId);
-              await organizer.send(`📝 **${details.series.title}** starts within 24 hours and has no agenda items yet. Meeting ID: \`${meeting.id}\``);
-            } catch {
-              // Direct messages can be disabled; the warning is intentionally organizer-only.
-            }
+            const channel = await this.getTextChannel(details.meeting.announcementChannelId);
+            await channel.send({
+              content: `<@${details.series.creatorId}> 📝 **${details.series.title}** starts within 24 hours and has no agenda items yet.`,
+              allowedMentions: { users: [details.series.creatorId], roles: [] },
+            });
             this.database.markNotificationsSent(meeting.id, ["empty-agenda-24h"]);
           }
         } catch (error) {

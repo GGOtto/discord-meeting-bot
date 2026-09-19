@@ -55,7 +55,7 @@ export const commands = [
           { name: "Balanced", value: "balanced" },
           { name: "High visibility", value: "high" },
         ))
-      .addRoleOption((option) => option.setName("notify-role").setDescription("Role invited and optionally mentioned by reminders"))
+      .addRoleOption((option) => option.setName("notify-role").setDescription("Role to invite (default @everyone)"))
       .addStringOption((option) => option.setName("first-agenda-item").setDescription("Optional first agenda item").setMaxLength(500))
       .addStringOption((option) => option.setName("ends-on").setDescription("Optional final local date as YYYY-MM-DD"))
       .addIntegerOption((option) => option.setName("ends-after").setDescription("Optional maximum number of occurrences").setMinValue(1).setMaxValue(500)))
@@ -112,24 +112,6 @@ export const commands = [
       .addStringOption(meetingIdOption)
       .addIntegerOption((option) => option.setName("number").setDescription("Agenda item number").setRequired(true).setMinValue(1)))
     .addSubcommand((subcommand) => subcommand.setName("list").setDescription("Show an agenda").addStringOption(meetingIdOption)),
-
-  new SlashCommandBuilder()
-    .setName("notifications")
-    .setDescription("Set your personal meeting notification preference")
-    .setDMPermission(false)
-    .addSubcommand((subcommand) => subcommand
-      .setName("set")
-      .setDescription("Choose how the bot should notify you")
-      .addStringOption((option) => option
-        .setName("mode")
-        .setDescription("Your preference")
-        .setRequired(true)
-        .addChoices(
-          { name: "Channel only", value: "channel" },
-          { name: "Channel + direct messages", value: "dm" },
-          { name: "Direct messages for important changes only", value: "important" },
-          { name: "No personal notifications", value: "off" },
-        ))),
 
   new SlashCommandBuilder()
     .setName("meeting-help")

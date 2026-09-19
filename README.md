@@ -16,7 +16,7 @@ The bot never joins the call, records audio, or reads ordinary messages.
 - Posts the live agenda, RSVP list, and current voice-room attendance
 - Supports skipping, canceling, and rescheduling a single occurrence
 - Provides quiet, balanced, and high-visibility notification presets
-- Allows opt-in direct-message reminders
+- Keeps all announcements and reminders in the chosen channel—never in DMs
 - Persists everything in a local SQLite database
 
 ## Notification philosophy
@@ -25,17 +25,15 @@ The default **Balanced** preset is useful without being chatty:
 
 | Event | Default behavior |
 | --- | --- |
-| New series | Meeting card; optional invited-role mention |
+| New occurrence | Meeting card mentioning the invited role (`@everyone` by default) |
 | 24 hours before | Reminder and current agenda, without a ping |
 | 10 minutes before | Reminder mentioning Going and Maybe attendees |
-| Empty agenda at 24 hours | Private warning to the organizer |
+| Empty agenda at 24 hours | Announcement-channel warning mentioning the organizer |
 | Agenda or RSVP edit | Meeting card updates silently |
 | Cancellation or reschedule | Going and Maybe attendees are notified |
 | Meeting time | Live agenda and attendance appear in the voice room's chat |
 
-The **Quiet** preset omits scheduled reminders. **High visibility** adds 24-hour, 1-hour, and 10-minute reminders and can mention the invited role.
-
-Members can use `/notifications set` to opt into direct messages, receive only important-change DMs, or turn personal DMs off.
+The **Quiet** preset omits scheduled reminders. **High visibility** adds 24-hour, 1-hour, and 10-minute reminders and mentions the invited role at 24 hours. The bot never sends direct messages.
 
 ## Discord commands
 
@@ -43,7 +41,6 @@ Members can use `/notifications set` to opt into direct messages, receive only i
 - `/series list|pause|resume|stop` — manage a series
 - `/meeting list|show|start|end|cancel|skip|reschedule` — manage one occurrence
 - `/agenda add|edit|remove|done|reopen|list` — collaborate on the agenda
-- `/notifications set` — set a personal DM preference
 - `/meeting-help` — show concise help inside Discord
 
 Only the organizer or a member with **Manage Events** can change lifecycle state. Agenda editing is intentionally open to everyone.
@@ -58,6 +55,7 @@ Only the organizer or a member with **Manage Events** can change lifecycle state
    - Send Messages
    - Embed Links
    - Read Message History
+   - Mention Everyone
    - Use Application Commands
 5. Use the generated URL to add the bot to your server.
 6. Copy `.env.example` to `.env` and fill in the token and application ID.
