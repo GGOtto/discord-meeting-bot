@@ -2,6 +2,7 @@ import {
   ChannelType,
   Client,
   EmbedBuilder,
+  Events,
   GatewayIntentBits,
   MessageFlags,
   ModalBuilder,
@@ -63,7 +64,7 @@ export class MeetingBot {
 
   async start(): Promise<void> {
     await registerCommands(this.config);
-    this.client.once("ready", () => {
+    this.client.once(Events.ClientReady, () => {
       console.log(`Meeting bot ready as ${this.client.user?.tag ?? "unknown"}`);
       void this.tick();
       this.scheduler = setInterval(() => void this.tick(), this.config.schedulerIntervalMs);
